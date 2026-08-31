@@ -12,3 +12,4 @@ export {
   type VeribenimProviderProps,
 } from './react';
 export { ConsentBanner, type ConsentBannerProps } from './ConsentBanner';
+export { webViewConsentScript } from './webview';
