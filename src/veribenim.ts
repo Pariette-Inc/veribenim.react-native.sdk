@@ -47,6 +47,22 @@ export class Veribenim {
   private observers: Array<(prefs: ConsentPreferences) => void> = [];
   private ready = false;
 
+  /** Uçuştaki kuyruk boşaltma — iki eşzamanlı tur aynı kaydı iki kez gönderir. */
+  private flushing: Promise<void> | null = null;
+  private flushAgain = false;
+
+  /**
+   * Kuyruk oku-değiştir-yaz adımlarını sıraya koyar. Depo asenkron olduğu için
+   * iki adım iç içe geçerse biri ötekinin yazdığını ezerdi (karar kaybolurdu).
+   */
+  private queueTail: Promise<unknown> = Promise.resolve();
+
+  private withQueue<T>(op: () => Promise<T>): Promise<T> {
+    const result = this.queueTail.then(op);
+    this.queueTail = result.catch(() => undefined);
+    return result;
+  }
+
   constructor(
     private readonly config: VeribenimConfig,
     storage?: VeribenimStorage,
@@ -165,9 +181,11 @@ export class Veribenim {
     await this.store.saveRecord(record);
     this.notify();
 
-    const queue = await this.store.loadQueue();
-    queue.push({ action, preferences: prefs, session_id: id, occurred_at: now });
-    await this.store.saveQueue(queue);
+    await this.withQueue(async () => {
+      const queue = await this.store.loadQueue();
+      queue.push({ action, preferences: prefs, session_id: id, occurred_at: now });
+      await this.store.saveQueue(queue);
+    });
 
     await this.flush();
   }
@@ -196,10 +214,42 @@ export class Veribenim {
   /**
    * Kuyruğu boşaltmayı dener. Ağ yoksa kayıtlar diskte kalır ve bir sonraki
    * açılışta yeniden denenir — rıza ispatı (KVKK Md.3) kaybolmaz.
+   *
+   * Aynı anda tek tur çalışır; arada gelen çağrı aynı Promise'i bekler ve yeni
+   * eklenen kayıt aynı boşaltmada gönderilir.
    */
-  async flush(): Promise<void> {
-    const queue = await this.store.loadQueue();
-    if (queue.length === 0) return;
+  flush(): Promise<void> {
+    if (this.flushing) {
+      this.flushAgain = true;
+      return this.flushing;
+    }
+
+    this.flushing = (async () => {
+      try {
+        do {
+          this.flushAgain = false;
+          await this.drainOnce();
+        } while (this.flushAgain);
+      } finally {
+        this.flushing = null;
+      }
+    })();
+
+    return this.flushing;
+  }
+
+  /**
+   * Tek tur. Kurallar dört SDK'da aynı (README → "Sunucu sözleşmesi"):
+   *
+   * - Sıra korunur: geçici hatada DURULUR. Sunucu aynı `session_id` satırını
+   *   günceller; "geri çek" ile "kabul" yer değiştirirse son durum ters yazılırdı.
+   * - 403 / 404 → oturum atılır, BİR KEZ yeniden el sıkışılır, aynı kayıt yeniden denenir.
+   * - 400 / 422 → kalıcı ret; kayıt kuyruğu tıkamasın diye atılır.
+   * - 402 (kota), 429, 5xx, ağ hatası → kayıt kuyrukta kalır.
+   */
+  private async drainOnce(): Promise<void> {
+    const snapshot = await this.store.loadQueue();
+    if (snapshot.length === 0) return;
 
     let session: DeviceSession;
     try {
@@ -208,22 +258,51 @@ export class Veribenim {
       return; // ağ yok / modül kapalı — kuyruk bekler
     }
 
-    const remaining = [];
+    let handled = 0;
+    let rehandshaken = false;
 
-    for (const entry of queue) {
-      try {
-        await this.api.logConsent(session, entry);
-      } catch (err) {
-        // 403 → oturum düşmüş veya modül kapanmış. Yeniden el sıkışılsın diye
-        // oturum atılır; kayıt kuyrukta kalır, hiçbir koşulda silinmez.
-        if ((err as { status?: number })?.status === 403) {
-          this.session = null;
-          await this.store.clearSession();
+    entries: for (const entry of snapshot) {
+      for (;;) {
+        let status: number | undefined;
+        try {
+          await this.api.logConsent(session, entry);
+          handled++;
+          continue entries;
+        } catch (err) {
+          status = (err as { status?: number })?.status;
         }
-        remaining.push(entry);
+
+        if (status === 400 || status === 422) {
+          handled++;
+          continue entries;
+        }
+
+        if ((status === 403 || status === 404) && !rehandshaken) {
+          rehandshaken = true;
+          await this.dropSession();
+          try {
+            session = await this.ensureSession();
+          } catch {
+            break entries;
+          }
+          continue; // aynı kaydı yeni oturumla yeniden dene
+        }
+
+        if (status === 403) await this.dropSession();
+        break entries;
       }
     }
 
-    await this.store.saveQueue(remaining);
+    // Tur sürerken eklenen kayıtlar kuyruğun SONUNDA durur; yalnızca bu turda
+    // işlenen baştaki kayıtlar çıkarılır.
+    await this.withQueue(async () => {
+      const current = await this.store.loadQueue();
+      await this.store.saveQueue(current.slice(handled));
+    });
+  }
+
+  private async dropSession(): Promise<void> {
+    this.session = null;
+    await this.store.clearSession();
   }
 }

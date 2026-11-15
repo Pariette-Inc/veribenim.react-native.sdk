@@ -1,6 +1,13 @@
 export * from './types';
 export { Veribenim } from './veribenim';
-export { VeribenimApiClient, VeribenimError, signatureHeaders, DEFAULT_API_URL } from './client';
+export {
+  VeribenimApiClient,
+  VeribenimError,
+  signatureHeaders,
+  defaultUserAgent,
+  DEFAULT_API_URL,
+  SDK_VERSION,
+} from './client';
 export { MemoryStorage, ConsentStore, type VeribenimStorage } from './storage';
 export { hmacSha256 } from './hmac';
 export {

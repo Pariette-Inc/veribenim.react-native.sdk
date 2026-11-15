@@ -6,7 +6,25 @@ import type {
   VeribenimConfig,
 } from './types';
 
+/** Bugünkü üretim adresi; `VeribenimConfig.apiUrl` ile değiştirilebilir. */
 export const DEFAULT_API_URL = 'https://live.veribenim.com';
+
+/** Paket sürümü — `user_agent` alanına girer. package.json ile aynı tutun. */
+export const SDK_VERSION = '1.0.0';
+
+/** Sunucu `app_version` / `os_version` için `max:32` doğrular; uzunu el sıkışmayı 422'ye düşürür. */
+const VERSION_MAX_LENGTH = 32;
+const clip = (v?: string) => (v == null ? undefined : v.slice(0, VERSION_MAX_LENGTH));
+
+/**
+ * Dört mobil SDK'da aynı biçim: `VeribenimSDK/<sürüm> (<platform>[ <os>]; <dil>)`.
+ * Sunucudaki `BotDetector` kalıplarından (`okhttp`, `axios/`, `node-fetch` …)
+ * hiçbirini içermemeli — aksi hâlde her mobil rıza bot sayılır.
+ */
+export function defaultUserAgent(platform: string, osVersion?: string): string {
+  const os = osVersion ? `${platform} ${osVersion}` : platform;
+  return `VeribenimSDK/${SDK_VERSION} (${os}; react-native)`;
+}
 
 export class VeribenimError extends Error {
   constructor(message: string, public readonly status?: number) {
@@ -66,8 +84,8 @@ export class VeribenimApiClient {
     const body = JSON.stringify({
       app_identifier: this.config.appIdentifier,
       platform: this.config.platform,
-      app_version: this.config.appVersion,
-      os_version: this.config.osVersion,
+      app_version: clip(this.config.appVersion),
+      os_version: clip(this.config.osVersion),
     });
 
     const res = await fetch(`${this.baseUrl}/api/app/session`, {
@@ -114,11 +132,14 @@ export class VeribenimApiClient {
   }
 
   async logConsent(session: DeviceSession, entry: QueuedConsent): Promise<void> {
+    // Alanlar `ConsentController::log` doğrulamasıyla birebir. `platform`
+    // GÖNDERİLMEZ: sunucu damgayı imzalı cihaz oturumundan okur.
+    // `user_agent` şart: sunucu boş değeri bot sayar (BotDetector: empty_ua).
     const body = JSON.stringify({
       action: entry.action,
       consents: entry.preferences,
       session_id: entry.session_id,
-      platform: 'mobile',
+      user_agent: this.config.userAgent ?? defaultUserAgent(this.config.platform, this.config.osVersion),
     });
 
     const res = await fetch(`${this.baseUrl}/api/v/${session.environment_token}/c`, {
@@ -131,6 +152,8 @@ export class VeribenimApiClient {
       body,
     });
 
+    // Sınıflandırma çağıranda (`Veribenim.flush`): 403/404 yeniden el
+    // sıkışma, 400/422 kalıcı ret, geri kalanı yeniden denenir.
     if (!res.ok) throw new VeribenimError('Rıza kaydedilemedi', res.status);
   }
 }

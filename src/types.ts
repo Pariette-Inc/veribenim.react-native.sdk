@@ -123,7 +123,11 @@ export interface VeribenimConfig {
   apiUrl?: string;
   /** Rıza kaç gün sonra yeniden sorulsun. Beyan sürümü değişirse zaten sorulur. */
   reconsentDays?: number;
+  /** El sıkışmada gönderilir (en çok 32 karakter). */
   appVersion?: string;
+  /** El sıkışmada gönderilir; ör. `Platform.Version`. */
   osVersion?: string;
+  /** Rıza kaydının `user_agent` alanı. Verilmezse `defaultUserAgent()`. Sunucu boş değeri bot sayar. */
+  userAgent?: string;
   debug?: boolean;
 }

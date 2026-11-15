@@ -22,11 +22,13 @@ npm install @react-native-async-storage/async-storage
 AsyncStorage kurulu değilse SDK belleğe düşer ve rıza yalnızca o oturum
 boyunca hatırlanır — yani uygulama her açıldığında ziyaretçiye tekrar sorulur.
 
-## Kurulum öncesi
+## Konsol kurulumu
 
-Konsolda uygulamanızı **mobil site** olarak ekleyin ve package name / bundle
-id'yi girin (`com.sirket.uygulama`). SDK'daki `appIdentifier` bununla birebir
-aynı olmalı — el sıkışma bu eşleşmeye dayanır.
+Ürününüzün (sitenizin) konsolunda **Uygulamalar** ekranından iOS ve/veya Android
+sürümünü ekleyin (`mobile_consent` modülü gerekir; ürün başına bir kez satılır,
+iki platformu da kapsar). SDK'daki `appIdentifier` konsolda girilen bundle id /
+package name ile **birebir** aynı olmalı — el sıkışma kimlik + platform çiftiyle
+eşleşir. Aynı kimlik iOS ve Android için ayrı iki kayıt olarak eklenir.
 
 ## Kullanım
 
@@ -42,6 +44,10 @@ export default function App() {
   );
 }
 ```
+
+Yapılandırma alanları: `appIdentifier`, `platform` (`'ios' | 'android'`, ör.
+`Platform.OS`), `apiUrl` (varsayılan `https://live.veribenim.com`; staging /
+proxy için değiştirin), `appVersion`, `osVersion`, `userAgent`, `reconsentDays`, `debug`.
 
 `<ConsentBanner />` hazır bir alt sayfa çizer. Kendi tasarımınızı istiyorsanız
 onu hiç kullanmayın — `useVeribenim()` tüm kararları verir:
@@ -103,6 +109,30 @@ kütüphaneyi kullanacağınız uygulamanın kararıdır.
 | Web (React/Vue/Next/Nuxt) | `@veribenim/core` + framework paketleri |
 | iOS native (Swift) | `Pariette-Inc/veribenim.swift.sdk` |
 | Android native (Kotlin) | `Pariette-Inc/veribenim.kotlin.sdk` |
+| Flutter | `veribenim` (pub.dev) |
+
+## Sunucu sözleşmesi
+
+Dört mobil SDK (Swift, Kotlin, Flutter, React Native) aynı sözleşmeyi uygular;
+kaynak `veribenim.api` (`AppSessionController`, `ConsentController::log`,
+`EnvironmentOriginCheck`, `PreferenceCenterController::show`).
+
+| Adım | İstek | Not |
+|---|---|---|
+| El sıkışma | `POST /api/app/session` `{app_identifier, platform, app_version?, os_version?}` | İmzasız. Yanıt `{token, device_token, secret, expires_at}`; 30 gün geçerli. 404 = bilinmeyen uygulama **veya** `mobile_consent` modülü kapalı (sunucu bilerek ayırmaz). |
+| Rıza kaydı | `POST /api/v/{token}/c` `{action, consents, session_id, user_agent}` | `X-VB-App`, `X-VB-Timestamp` (saniye), `X-VB-Signature` = HMAC-SHA256(`secret`, `"{device_token}.{timestamp}.{ham gövde}"`). Sunucu ±300 sn kabul eder. `Origin`/`Referer` gönderilmez. |
+| Tercih okuma | `GET /api/preferences/{token}?platform=mobile&session_id=…` | İmzasız. Kategoriler, mobil kapsamlı izleyiciler, `current_consents`. |
+
+- `platform` rıza gövdesinde **gönderilmez**: sunucu damgayı imzalı cihaz oturumundan okur.
+- `user_agent` **şarttır**: sunucu boş değeri bot sayar ve kayıt raporlardan düşer.
+  Varsayılan `VeribenimSDK/<sürüm> (<platform> <os>; <dil>)`; yapılandırmadan değiştirilebilir.
+- Hata işleme (çevrimdışı kuyruk):
+  - 403 / 404 → cihaz oturumu atılır, **bir kez** yeniden el sıkışılır ve aynı kayıt
+    yeniden denenir (oturum iptali, süre dolumu, ürün devri).
+  - 400 / 422 → kalıcı ret; kayıt atılır, kuyruğu tıkamaz.
+  - 402 (kota dolu), 429, 5xx, ağ hatası → kayıt kuyrukta kalır, **sıra korunur**
+    (ilk kayıt gidemezse sonrakiler gönderilmez).
+- Aynı anda tek kuyruk boşaltma çalışır; boşaltma sürerken verilen karar kaybolmaz.
 
 ## Test
 
